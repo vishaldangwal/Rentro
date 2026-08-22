@@ -37,45 +37,44 @@ const CarDetails = () => {
       const totalAmount = days * car.pricePerDay;
 
       // 1️⃣ Create Razorpay Order from backend
+      // CarDetails.jsx
       const { data } = await axios.post("/api/payment/create-order", {
-        amount: totalAmount,
+        car: id,
+        pickupDate,
+        returnDate,
       });
 
       if (!data.success) {
-        toast.error("Order creation failed");
+        toast.error(data.message || "Order creation failed");
         return;
       }
 
-      // 2️⃣ Razorpay Options
       const options = {
         key: import.meta.env.VITE_RAZORPAY_KEY,
         amount: data.order.amount,
         currency: "INR",
         order_id: data.order.id,
-
         name: "Rentro",
         description: "Car Booking Payment",
 
         handler: async function (response) {
-          // 3️⃣ After Successful Payment → Create Booking
-          const bookingRes = await axios.post("/api/bookings/create", {
-            car: id,
-            pickupDate,
-            returnDate,
-            paymentId: response.razorpay_payment_id,
+          const verifyRes = await axios.post("/api/payment/verify-payment", {
+            razorpay_order_id: response.razorpay_order_id,
+            razorpay_payment_id: response.razorpay_payment_id,
+            razorpay_signature: response.razorpay_signature,
           });
 
-          if (bookingRes.data.success) {
+          if (verifyRes.data.success) {
             toast.success("Payment Successful & Booking Confirmed!");
             navigate("/my-bookings");
           } else {
-            toast.error("Booking failed");
+            toast.error(
+              verifyRes.data.message || "Payment verification failed",
+            );
           }
         },
 
-        theme: {
-          color: "#2563eb",
-        },
+        theme: { color: "#2563eb" },
       };
 
       const rzp = new window.Razorpay(options);

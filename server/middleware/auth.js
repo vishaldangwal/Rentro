@@ -1,20 +1,24 @@
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 
-export const protect = async (req, res, next)=>{
+export const protect = async (req, res, next) => {
     const token = req.headers.authorization;
-    if(!token){
-        return res.json({success: false, message: "not authorized"})
+    if (!token) {
+        return res.json({ success: false, message: "not authorized" });
     }
     try {
-        const userId = jwt.decode(token, process.env.JWT_SECRET)
+        const userId = jwt.verify(token, process.env.JWT_SECRET, {
+            algorithms: ["HS256"],
+        });
 
-        if(!userId){
-            return res.json({success: false, message: "not authorized"})
+        const user = await User.findById(userId).select("-password");
+        if (!user) {
+            return res.json({ success: false, message: "not authorized" });
         }
-        req.user = await User.findById(userId).select("-password")
+
+        req.user = user;
         next();
     } catch (error) {
-        return res.json({success: false, message: "not authorized"})
+        return res.json({ success: false, message: "not authorized" });
     }
-}
+};
