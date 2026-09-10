@@ -24,6 +24,22 @@ export const createOrder = async (req, res) => {
     if (noOfDays <= 0) {
       return res.json({ success: false, message: "Invalid dates" });
     }
+
+    const existingBooking = await Booking.findOne({
+      car,
+      status: "confirmed",
+      pickupDate: { $lte: returnDate },
+      returnDate: { $gte: pickupDate },
+    });
+
+    if (existingBooking) {
+      return res.json({
+        success: false,
+        message: "Car is already booked for the selected dates. Please choose different dates.",
+      });
+    }
+
+    // 2️⃣ CALCULATE AMOUNT & CREATE RAZORPAY ORDER
     const amount = carData.pricePerDay * noOfDays;
 
     const order = await razorpay.orders.create({
@@ -43,6 +59,7 @@ export const createOrder = async (req, res) => {
   }
 };
 
+// paymentController.js
 export const verifyPayment = async (req, res) => {
   try {
     const {
@@ -55,7 +72,7 @@ export const verifyPayment = async (req, res) => {
       return res.json({ success: false, message: "Missing payment details" });
     }
 
-    // Recompute the signature ourselves — never trust the client's copy
+    // 1. Recompute and check HMAC signature
     const expectedSignature = crypto
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
       .update(`${razorpay_order_id}|${razorpay_payment_id}`)
@@ -65,8 +82,7 @@ export const verifyPayment = async (req, res) => {
       return res.json({ success: false, message: "Payment verification failed" });
     }
 
-    // Pull the trusted booking details back from Razorpay's own order,
-    // not from whatever the client sends
+    // 2. Fetch order notes from Razorpay
     const order = await razorpay.orders.fetch(razorpay_order_id);
     const { car, pickupDate, returnDate, userId } = order.notes;
 
@@ -74,16 +90,39 @@ export const verifyPayment = async (req, res) => {
       return res.json({ success: false, message: "Not authorized" });
     }
 
-    // Re-check availability at the moment of booking (see step 3 note below)
+    // 3. Re-check availability at the moment of verification
     const overlapping = await Booking.findOne({
       car,
       pickupDate: { $lte: returnDate },
       returnDate: { $gte: pickupDate },
     });
+
+    // 🚨 IF OVERLAPPING IS FOUND: TRIGGER AUTO-REFUND
     if (overlapping) {
-      return res.json({ success: false, message: "Car no longer available for these dates" });
+      try {
+        await razorpay.payments.refund(razorpay_payment_id, {
+          speed: "optimum", // Initiates instant refund if supported
+          notes: {
+            reason: "Car double-booking conflict during checkout",
+            order_id: razorpay_order_id,
+          },
+        });
+
+        return res.json({
+          success: false,
+          message: "Car was booked by another user right before payment completion. Your payment has been automatically refunded.",
+        });
+      } catch (refundError) {
+        // Fallback: If refund API call fails, log for manual admin intervention
+        console.error("Refund failed for payment:", razorpay_payment_id, refundError);
+        return res.json({
+          success: false,
+          message: "Car is unavailable. Automatic refund failed—please contact support with Payment ID: " + razorpay_payment_id,
+        });
+      }
     }
 
+    // 4. Proceed with normal booking creation if available
     const carData = await Car.findById(car);
     const noOfDays = Math.ceil(
       (new Date(returnDate) - new Date(pickupDate)) / (1000 * 60 * 60 * 24)
